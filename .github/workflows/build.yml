@@ -5,82 +5,264 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Fix Folders & Build APK
+      - name: Create All Files & Build APK
         run: |
-          # Agar files .github/workflows ke andar ban gayi hain toh unhe bahar layein
-          if [ -d ".github/workflows/app" ]; then
-            cp -r .github/workflows/app .
-          fi
-
+          rm -rf *
           mkdir -p app/src/main/java/com/custom/applocker
           mkdir -p app/src/main/res/xml
 
-          # Kahi bhi padi hui files ko sahi jagah copy karein
-          find . -name "MainActivity.java" -exec cp {} app/src/main/java/com/custom/applocker/MainActivity.java \; || true
-          find . -name "LockService.java" -exec cp {} app/src/main/java/com/custom/applocker/LockService.java \; || true
-          find . -name "service_config.xml" -exec cp {} app/src/main/res/xml/service_config.xml \; || true
-          find . -name "AndroidManifest.xml" -exec cp {} app/src/main/AndroidManifest.xml \; || true
+          printf 'pluginManagement {\n repositories {\n google()\n mavenCentral()\n gradlePluginPortal()\n }\n}\ndependencyResolutionManagement {\n repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n repositories {\n google()\n mavenCentral()\n }\n}\nrootProject.name = "MyAppLocker"\ninclude ":app"\n' > settings.gradle
 
-          sed -i 's/package="com.custom.applocker"//g' app/src/main/AndroidManifest.xml
+          printf 'plugins {\n id "com.android.application" version "8.2.0" apply false\n}\n' > build.gradle
 
-          cat << 'EOF' > settings.gradle
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
+          printf 'plugins {\n id "com.android.application"\n}\nandroid {\n namespace "com.custom.applocker"\n compileSdk 34\n defaultConfig {\n applicationId "com.custom.applocker"\n minSdk 24\n targetSdk 34\n versionCode 1\n versionName "1.0"\n }\n compileOptions {\n sourceCompatibility JavaVersion.VERSION_17\n targetCompatibility JavaVersion.VERSION_17\n }\n}\ndependencies {}\n' > app/build.gradle
+
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"\n android:accessibilityEventTypes="typeWindowStateChanged"\n android:accessibilityFeedbackType="feedbackGeneric"\n android:accessibilityFlags="flagDefault"\n android:canRetrieveWindowContent="true"\n android:notificationTimeout="100" />\n' > app/src/main/res/xml/service_config.xml
+
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />\n <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />\n <application android:allowBackup="true" android:label="Super App Lock" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">\n <activity android:name=".MainActivity" android:exported="true">\n <intent-filter>\n <action android:name="android.intent.action.MAIN" />\n <category android:name="android.intent.category.LAUNCHER" />\n <category android:name="android.intent.category.HOME" />\n <category android:name="android.intent.category.DEFAULT" />\n </intent-filter>\n </activity>\n <service android:name=".LockService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">\n <intent-filter>\n <action android:name="android.accessibilityservice.AccessibilityService" />\n </intent-filter>\n <meta-data android:name="android.accessibilityservice" android:resource="@xml/service_config" />\n </service>\n </application>\n</manifest>\n' > app/src/main/AndroidManifest.xml
+
+          cat << 'EOF' > app/src/main/java/com/custom/applocker/LockService.java
+          package com.custom.applocker;
+          import android.accessibilityservice.AccessibilityService;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.view.accessibility.AccessibilityEvent;
+          import java.util.HashSet;
+          import java.util.Set;
+          public class LockService extends AccessibilityService {
+              @Override
+              public void onAccessibilityEvent(AccessibilityEvent event) {
+                  if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                      if (event.getPackageName() == null) return;
+                      String pkg = event.getPackageName().toString();
+                      if (pkg.equals(getPackageName())) return;
+                      SharedPreferences prefs = getSharedPreferences("AppLockPrefs", MODE_PRIVATE);
+                      Set<String> locked = prefs.getStringSet("locked_apps", new HashSet<>());
+                      String tempUnlock = prefs.getString("temp_unlock", "");
+                      if (!pkg.equals(tempUnlock)) {
+                          prefs.edit().putString("temp_unlock", "").apply();
+                      }
+                      if (locked.contains(pkg) && !pkg.equals(tempUnlock)) {
+                          Intent i = new Intent(this, MainActivity.class);
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                          i.putExtra("LOCKED_PKG", pkg);
+                          startActivity(i);
+                      }
+                  }
               }
+              @Override
+              public void onInterrupt() {}
           }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-          rootProject.name = "MyAppLocker"
-          include ':app'
           EOF
 
-          cat << 'EOF' > build.gradle
-          plugins {
-              id 'com.android.application' version '8.2.0' apply false
+          cat << 'EOF' > app/src/main/java/com/custom/applocker/MainActivity.java
+          package com.custom.applocker;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.ApplicationInfo;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.text.InputFilter;
+          import android.text.InputType;
+          import android.view.Gravity;
+          import android.widget.*;
+          import java.util.*;
+          public class MainActivity extends Activity {
+              SharedPreferences prefs;
+              LinearLayout mainLayout, listContainer;
+              boolean showHidden = false;
+              int selectedLength = 4;
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  prefs = getSharedPreferences("AppLockPrefs", MODE_PRIVATE);
+                  selectedLength = prefs.getInt("pass_len", 4);
+                  mainLayout = new LinearLayout(this);
+                  mainLayout.setOrientation(LinearLayout.VERTICAL);
+                  mainLayout.setBackgroundColor(Color.parseColor("#121212"));
+                  mainLayout.setPadding(30, 50, 30, 30);
+                  setContentView(mainLayout);
+                  String savedPass = prefs.getString("password", "");
+                  String targetPkg = getIntent().getStringExtra("LOCKED_PKG");
+                  if (savedPass.isEmpty()) showSetupPasswordScreen();
+                  else showVerifyPasswordScreen(targetPkg);
+              }
+              void showSetupPasswordScreen() {
+                  mainLayout.removeAllViews();
+                  TextView title = new TextView(this);
+                  title.setText("Set Password (4, 6, or 15 Digits)");
+                  title.setTextColor(Color.WHITE);
+                  title.setTextSize(18);
+                  mainLayout.addView(title);
+                  RadioGroup rg = new RadioGroup(this);
+                  rg.setOrientation(LinearLayout.HORIZONTAL);
+                  int[] lengths = {4, 6, 15};
+                  for (int len : lengths) {
+                      RadioButton rb = new RadioButton(this);
+                      rb.setText(len + " Digit");
+                      rb.setTextColor(Color.WHITE);
+                      rb.setId(len);
+                      if (len == selectedLength) rb.setChecked(true);
+                      rg.addView(rb);
+                  }
+                  mainLayout.addView(rg);
+                  EditText passInput = new EditText(this);
+                  passInput.setHint("Enter " + selectedLength + " digit PIN");
+                  passInput.setHintTextColor(Color.GRAY);
+                  passInput.setTextColor(Color.WHITE);
+                  passInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+                  passInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(selectedLength)});
+                  mainLayout.addView(passInput);
+                  rg.setOnCheckedChangeListener((group, checkedId) -> {
+                      selectedLength = checkedId;
+                      passInput.setText("");
+                      passInput.setHint("Enter " + selectedLength + " digit PIN");
+                      passInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(selectedLength)});
+                  });
+                  Button saveBtn = new Button(this);
+                  saveBtn.setText("Save Password");
+                  saveBtn.setOnClickListener(v -> {
+                      String p = passInput.getText().toString();
+                      if (p.length() != selectedLength) {
+                          Toast.makeText(this, "Enter exact " + selectedLength + " digits!", Toast.LENGTH_SHORT).show();
+                          return;
+                      }
+                      prefs.edit().putString("password", p).putInt("pass_len", selectedLength).apply();
+                      Toast.makeText(this, "Password Saved!", Toast.LENGTH_SHORT).show();
+                      showDashboard();
+                  });
+                  mainLayout.addView(saveBtn);
+              }
+              void showVerifyPasswordScreen(String lockedPkg) {
+                  mainLayout.removeAllViews();
+                  int len = prefs.getInt("pass_len", 4);
+                  TextView title = new TextView(this);
+                  title.setText(lockedPkg != null ? "Locked! Enter " + len + "-Digit PIN" : "Enter Master PIN");
+                  title.setTextColor(Color.WHITE);
+                  title.setTextSize(20);
+                  title.setGravity(Gravity.CENTER);
+                  mainLayout.addView(title);
+                  EditText passInput = new EditText(this);
+                  passInput.setTextColor(Color.WHITE);
+                  passInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+                  passInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(len)});
+                  mainLayout.addView(passInput);
+                  Button unlockBtn = new Button(this);
+                  unlockBtn.setText("Unlock");
+                  unlockBtn.setOnClickListener(v -> {
+                      String saved = prefs.getString("password", "");
+                      if (passInput.getText().toString().equals(saved)) {
+                          if (lockedPkg != null) {
+                              prefs.edit().putString("temp_unlock", lockedPkg).apply();
+                              finish();
+                          } else showDashboard();
+                      } else {
+                          Toast.makeText(this, "Wrong Password!", Toast.LENGTH_SHORT).show();
+                          passInput.setText("");
+                      }
+                  });
+                  mainLayout.addView(unlockBtn);
+              }
+              void showDashboard() {
+                  mainLayout.removeAllViews();
+                  LinearLayout topBtns = new LinearLayout(this);
+                  topBtns.setOrientation(LinearLayout.HORIZONTAL);
+                  Button permBtn = new Button(this);
+                  permBtn.setText("Enable Lock");
+                  permBtn.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+                  topBtns.addView(permBtn);
+                  Button changePassBtn = new Button(this);
+                  changePassBtn.setText("Change PIN");
+                  changePassBtn.setOnClickListener(v -> showSetupPasswordScreen());
+                  topBtns.addView(changePassBtn);
+                  Button toggleHideBtn = new Button(this);
+                  toggleHideBtn.setText(showHidden ? "All Apps" : "Hidden Apps");
+                  toggleHideBtn.setOnClickListener(v -> {
+                      showHidden = !showHidden;
+                      showDashboard();
+                  });
+                  topBtns.addView(toggleHideBtn);
+                  mainLayout.addView(topBtns);
+                  ScrollView scroll = new ScrollView(this);
+                  listContainer = new LinearLayout(this);
+                  listContainer.setOrientation(LinearLayout.VERTICAL);
+                  scroll.addView(listContainer);
+                  mainLayout.addView(scroll);
+                  loadApps();
+              }
+              void loadApps() {
+                  listContainer.removeAllViews();
+                  PackageManager pm = getPackageManager();
+                  List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
+                  Set<String> lockedApps = new HashSet<>(prefs.getStringSet("locked_apps", new HashSet<>()));
+                  Set<String> hiddenApps = new HashSet<>(prefs.getStringSet("hidden_apps", new HashSet<>()));
+                  Collections.sort(apps, (a, b) -> pm.getApplicationLabel(a).toString().compareToIgnoreCase(pm.getApplicationLabel(b).toString()));
+                  for (ApplicationInfo app : apps) {
+                      if (app.packageName.equals(getPackageName())) continue;
+                      if (pm.getLaunchIntentForPackage(app.packageName) == null && !app.packageName.equals("com.android.settings")) continue;
+                      boolean isHidden = hiddenApps.contains(app.packageName);
+                      if (isHidden && !showHidden) continue;
+                      LinearLayout row = new LinearLayout(this);
+                      row.setOrientation(LinearLayout.HORIZONTAL);
+                      row.setPadding(10, 20, 10, 20);
+                      TextView name = new TextView(this);
+                      name.setText(pm.getApplicationLabel(app).toString() + (app.packageName.equals("com.android.settings") ? " (Settings)" : ""));
+                      name.setTextColor(Color.WHITE);
+                      name.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                      name.setOnClickListener(v -> {
+                          Intent launch = pm.getLaunchIntentForPackage(app.packageName);
+                          if (launch != null) startActivity(launch);
+                      });
+                      row.addView(name);
+                      CheckBox lockBox = new CheckBox(this);
+                      lockBox.setText("Lock");
+                      lockBox.setTextColor(Color.CYAN);
+                      lockBox.setChecked(lockedApps.contains(app.packageName));
+                      lockBox.setOnCheckedChangeListener((b, checked) -> {
+                          if (checked) lockedApps.add(app.packageName);
+                          else lockedApps.remove(app.packageName);
+                          prefs.edit().putStringSet("locked_apps", lockedApps).apply();
+                      });
+                      row.addView(lockBox);
+                      CheckBox hideBox = new CheckBox(this);
+                      hideBox.setText("Hide");
+                      hideBox.setTextColor(Color.YELLOW);
+                      hideBox.setChecked(isHidden);
+                      hideBox.setOnCheckedChangeListener((b, checked) -> {
+                          if (checked) hiddenApps.add(app.packageName);
+                          else hiddenApps.remove(app.packageName);
+                          prefs.edit().putStringSet("hidden_apps", hiddenApps).apply();
+                          loadApps();
+                      });
+                      row.addView(hideBox);
+                      listContainer.addView(row);
+                  }
+              }
+              @Override
+              public void onBackPressed() {
+                  if (getIntent().getStringExtra("LOCKED_PKG") != null) {
+                      Intent home = new Intent(Intent.ACTION_MAIN);
+                      home.addCategory(Intent.CATEGORY_HOME);
+                      home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      startActivity(home);
+                  } else super.onBackPressed();
+              }
           }
           EOF
 
-          cat << 'EOF' > app/build.gradle
-          plugins {
-              id 'com.android.application'
-          }
-          android {
-              namespace 'com.custom.applocker'
-              compileSdk 34
-              defaultConfig {
-                  applicationId "com.custom.applocker"
-                  minSdk 24
-                  targetSdk 34
-                  versionCode 1
-                  versionName "1.0"
-              }
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-              }
-          }
-          dependencies {}
-          EOF
+          sed -i 's/^          //' app/src/main/java/com/custom/applocker/LockService.java
+          sed -i 's/^          //' app/src/main/java/com/custom/applocker/MainActivity.java
+          sed -i 's/^EOF//' app/src/main/java/com/custom/applocker/LockService.java
+          sed -i 's/^EOF//' app/src/main/java/com/custom/applocker/MainActivity.java
 
           wget -q https://services.gradle.org/distributions/gradle-8.5-bin.zip
           unzip -q gradle-8.5-bin.zip
