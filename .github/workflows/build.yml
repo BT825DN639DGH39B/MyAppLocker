@@ -1,21 +1,92 @@
 name: Build APK
 on: [push, workflow_dispatch]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.5'
-      - name: Build Debug APK
-        run: gradle assembleDebug
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Fix Structure & Build APK
+        run: |
+          # Ensure folders exist in exact place
+          mkdir -p app/src/main/java/com/custom/applocker
+          mkdir -p app/src/main/res/xml
+
+          # Create root settings.gradle
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "MyAppLocker"
+          include ':app'
+          EOF
+
+          # Create root build.gradle
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.0' apply false
+          }
+          EOF
+
+          # Create app/build.gradle
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.custom.applocker'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.custom.applocker"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          dependencies {}
+          EOF
+
+          # Move files if created in wrong folder accidentally
+          find . -maxdepth 2 -name "MainActivity.java" -exec cp {} app/src/main/java/com/custom/applocker/MainActivity.java \; || true
+          find . -maxdepth 2 -name "LockService.java" -exec cp {} app/src/main/java/com/custom/applocker/LockService.java \; || true
+          find . -maxdepth 3 -name "service_config.xml" -exec cp {} app/src/main/res/xml/service_config.xml \; || true
+          find . -maxdepth 3 -name "AndroidManifest.xml" -exec cp {} app/src/main/AndroidManifest.xml \; || true
+
+          # Remove package attribute from Manifest if present
+          sed -i 's/package="com.custom.applocker"//g' app/src/main/AndroidManifest.xml
+
+          # Install Gradle 8.5 directly and build APK
+          wget -q https://services.gradle.org/distributions/gradle-8.5-bin.zip
+          unzip -q gradle-8.5-bin.zip
+          ./gradle-8.5/bin/gradle assembleDebug --no-daemon
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
