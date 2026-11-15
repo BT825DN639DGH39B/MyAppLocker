@@ -17,13 +17,24 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Fix Structure & Build APK
+      - name: Fix Folders & Build APK
         run: |
-          # Ensure folders exist in exact place
+          # Agar files .github/workflows ke andar ban gayi hain toh unhe bahar layein
+          if [ -d ".github/workflows/app" ]; then
+            cp -r .github/workflows/app .
+          fi
+
           mkdir -p app/src/main/java/com/custom/applocker
           mkdir -p app/src/main/res/xml
 
-          # Create root settings.gradle
+          # Kahi bhi padi hui files ko sahi jagah copy karein
+          find . -name "MainActivity.java" -exec cp {} app/src/main/java/com/custom/applocker/MainActivity.java \; || true
+          find . -name "LockService.java" -exec cp {} app/src/main/java/com/custom/applocker/LockService.java \; || true
+          find . -name "service_config.xml" -exec cp {} app/src/main/res/xml/service_config.xml \; || true
+          find . -name "AndroidManifest.xml" -exec cp {} app/src/main/AndroidManifest.xml \; || true
+
+          sed -i 's/package="com.custom.applocker"//g' app/src/main/AndroidManifest.xml
+
           cat << 'EOF' > settings.gradle
           pluginManagement {
               repositories {
@@ -43,14 +54,12 @@ jobs:
           include ':app'
           EOF
 
-          # Create root build.gradle
           cat << 'EOF' > build.gradle
           plugins {
               id 'com.android.application' version '8.2.0' apply false
           }
           EOF
 
-          # Create app/build.gradle
           cat << 'EOF' > app/build.gradle
           plugins {
               id 'com.android.application'
@@ -73,16 +82,6 @@ jobs:
           dependencies {}
           EOF
 
-          # Move files if created in wrong folder accidentally
-          find . -maxdepth 2 -name "MainActivity.java" -exec cp {} app/src/main/java/com/custom/applocker/MainActivity.java \; || true
-          find . -maxdepth 2 -name "LockService.java" -exec cp {} app/src/main/java/com/custom/applocker/LockService.java \; || true
-          find . -maxdepth 3 -name "service_config.xml" -exec cp {} app/src/main/res/xml/service_config.xml \; || true
-          find . -maxdepth 3 -name "AndroidManifest.xml" -exec cp {} app/src/main/AndroidManifest.xml \; || true
-
-          # Remove package attribute from Manifest if present
-          sed -i 's/package="com.custom.applocker"//g' app/src/main/AndroidManifest.xml
-
-          # Install Gradle 8.5 directly and build APK
           wget -q https://services.gradle.org/distributions/gradle-8.5-bin.zip
           unzip -q gradle-8.5-bin.zip
           ./gradle-8.5/bin/gradle assembleDebug --no-daemon
